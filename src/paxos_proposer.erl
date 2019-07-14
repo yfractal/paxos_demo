@@ -4,7 +4,8 @@
 
 %% APIp
 -export([start_link/1,
-         prepare/2]).
+         prepare/2,
+         proposal_accepted/2]).
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, terminate/3, code_change/4]).
@@ -24,6 +25,9 @@ start_link(Id) ->
 
 prepare(Pid, {N, Proposal}) ->
     gen_statem:cast(Pid, {prepare, N, Proposal}).
+
+proposal_accepted(Pid, {N, Proposal}) ->
+    gen_statem:cast(Pid, proposal_accepted).
 %%%===================================================================
 %%% gen_statem callbacks
 %%%===================================================================
@@ -46,7 +50,7 @@ prepare(cast, {prepare, _N, _Proposal}, Data) ->
 proposal(enter, _Msg, Data) ->
     %% send_prepare msg to all acceptor
     {keep_state, Data};
-proposal(cast, {proposal_accepted}, Data) ->
+proposal(cast, proposal_accepted, Data) ->
     {keep_state, Data}.
 
 terminate(_Reason, _State, _Data) ->
