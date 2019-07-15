@@ -5,7 +5,8 @@
 %% APIp
 -export([start_link/2,
          prepare/2,
-         proposal_accepted/2]).
+         proposal_accepted/2,
+         consensus/3]).
 
 %% gen_statem callbacks
 -export([callback_mode/0, init/1, terminate/3, code_change/4]).
@@ -46,41 +47,48 @@ init([{Id, AcceptorPids}]) ->
     {ok, prepare, Data}.
 
 prepare(enter, _Msg, Data) ->
-    io:format("Enter prepare state."),
     Data2 = send_prepare_to_all_acceptors(Data),
-    {keep_state, Data2};
+    {keep_state, Data2, [{state_timeout, 10, timeout}]};
 prepare(cast, {prepare, SeqNum, Proposal},
         #data{received_messag_count=ReceivedMessagCount, current_seq_number=CurrentSeqNumber}=Data) when CurrentSeqNumber =:= SeqNum ->
     MajorityCount = majority_count(Data),
-    if ReceivedMessagCount + 1 > MajorityCount ->
+    if ReceivedMessagCount + 1 >= MajorityCount ->
             Data2 = maybe_update_received_proposal(Data, {SeqNum, Proposal}),
-            Data3 = Data2#data{received_messag_count=ReceivedMessagCount + 1},
+            Data3 = Data2#data{received_messag_count=0},
             {next_state, proposal, Data3};
        true ->
-            {keep_state, Data}
+            Data2 = Data#data{received_messag_count = ReceivedMessagCount + 1},
+            {keep_state, Data2, [{state_timeout, 10, timeout}]}
     end;
+prepare(state_timeout, timeout, Data) ->
+    Data2 = send_prepare_to_all_acceptors(Data),
+    {keep_state, Data2, [{state_timeout, 10, timeout}]};
 prepare(_, _, Data) ->
     {keep_state, Data}.
 
-
 proposal(enter, _Msg, Data) ->
-    io:format("Enter proposal state."),
     Data2 = send_proposal_to_all_acceptors(Data),
-    {keep_state, Data2};
+    {keep_state, Data2, [{state_timeout, 20, timeout}]};
 proposal(cast, {proposal_accepted, SeqNum, Proposal},
          #data{received_messag_count=ReceivedMessagCount,
                current_seq_number=SeqNum,
                current_proposal=Proposal} = Data) ->
-    io:format("Receive proposal"),
     MajorityCount = majority_count(Data),
-    if ReceivedMessagCount + 1 > MajorityCount ->
-            Data3 = Data#data{received_messag_count=ReceivedMessagCount + 1},
-            {keep_state, proposal, Data3};
+    if ReceivedMessagCount + 1 >= MajorityCount ->
+            Data3 = Data#data{current_proposal=Proposal},
+            {next_state, consensus, Data3};
        true ->
-            io:format("Consensus on proposal: ~p~n", [Proposal]),
-            {keep_state, Data}
+            Data2 = Data#data{received_messag_count = ReceivedMessagCount + 1},
+            {keep_state, Data2, [{state_timeout, 10, timeout}]}
     end;
-proposal(_, _, Data) ->
+proposal(state_timeout, timeout, Data) ->
+    {next_state, prepare, Data};
+proposal(A, B, Data) ->
+    {keep_state, Data}.
+
+consensus(enter, _, #data{current_proposal=Proposal}=Data) ->
+    {keep_state, Data};
+consensus(_, _, Data) ->
     {keep_state, Data}.
 
 terminate(_Reason, _State, _Data) ->
@@ -94,18 +102,19 @@ code_change(_OldVsn, State, Data, _Extra) ->
 %%%===================================================================
 send_prepare_to_all_acceptors(#data{acceptor_pids=AcceptorPids, seq=Seq}=Data) ->
     SeqNumber = get_seq_number(Data),
+    timer:sleep(rand:uniform(20)),
     lists:foreach(fun(AcceptorPid) ->
                           paxos_acceptor:prepare(AcceptorPid, self(), SeqNumber)
                   end, AcceptorPids),
     Data#data{seq=Seq + 1, current_seq_number=SeqNumber}.
 
-send_proposal_to_all_acceptors(#data{acceptor_pids=AcceptorPids, seq=Seq}=Data) ->
-    SeqNumber = get_seq_number(Data),
+send_proposal_to_all_acceptors(#data{acceptor_pids=AcceptorPids,
+                                     current_seq_number=SeqNumber}=Data) ->
     Proposal = get_proposal(Data),
     lists:foreach(fun(AcceptorPid) ->
                           paxos_acceptor:accept(AcceptorPid, self(), {SeqNumber, Proposal})
                   end, AcceptorPids),
-    Data#data{seq=Seq + 1, current_seq_number=SeqNumber, current_proposal=Proposal}.
+    Data#data{current_proposal=Proposal}.
 
 get_proposal(#data{received_proposal=undefined, id=Id}) ->
     Id;
@@ -115,12 +124,12 @@ get_proposal(#data{received_proposal=ReceivedProposal}) ->
 majority_count(#data{acceptor_pids=AcceptorPids}) ->
     AcceptorCount = length(AcceptorPids),
     round(AcceptorCount/2).
-
 maybe_update_received_proposal(#data{received_proposal_seq_num=undefined}=Data, {SeqNum, Proposal}) ->
     Data#data{received_proposal_seq_num=SeqNum,
               received_proposal=Proposal};
-maybe_update_received_proposal(#data{received_proposal_seq_num=ReceivedProposalSeqNum}=Data,
-                               {SeqNum, Proposal}) when SeqNum > ReceivedProposalSeqNum ->
+maybe_update_received_proposal(
+  #data{received_proposal_seq_num=ReceivedProposalSeqNum}=Data, {SeqNum, Proposal})
+  when (SeqNum > ReceivedProposalSeqNum) and (Proposal /= undefined) ->
     Data#data{received_proposal_seq_num=SeqNum,
               received_proposal=Proposal};
 maybe_update_received_proposal(Data, _) ->

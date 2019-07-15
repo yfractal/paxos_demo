@@ -20,7 +20,7 @@
 %%%===================================================================
 
 start_link() ->
-    gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
+    gen_server:start_link(?MODULE, [], []).
 
 prepare(Pid, From, SeqNum) ->
     gen_server:cast(Pid, {prepare, From, SeqNum}).
@@ -31,7 +31,6 @@ accept(Pid, From, {SeqNum, NewProposal}) ->
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
-
 init([]) ->
     process_flag(trap_exit, true),
     {ok, #state{}}.
@@ -67,16 +66,17 @@ format_status(_Opt, Status) ->
 %%% Internal functions
 %%%===================================================================
 do_prepare(From, SeqNum,
-           #state{highest_seq_num=HighestSeqNum, accepted_proposal=Proposal} = State) when SeqNum > HighestSeqNum ->
+           #state{highest_seq_num=HighestSeqNum, accepted_proposal=Proposal} = State)
+  when (HighestSeqNum =:= undefined) or (SeqNum > HighestSeqNum)->
     paxos_proposer:prepare(From, {SeqNum, Proposal}),
     State#state{highest_seq_num=SeqNum};
-do_prepare(_, _, State) ->
+do_prepare(_, SeqNum, State) ->
     State.
 
-
 do_accept(From, {SeqNum, NewProposal},
-          #state{highest_seq_num=HighestSeqNum, accepted_proposal=Proposal} = State) when SeqNum > HighestSeqNum ->
-    paxos_proposer:proposal_accepted(From, {SeqNum, Proposal}),
+          #state{highest_seq_num=HighestSeqNum} = State)
+  when SeqNum =:= HighestSeqNum ->
+    paxos_proposer:proposal_accepted(From, {SeqNum, NewProposal}),
 
     State#state{highest_seq_num=SeqNum, accepted_proposal=NewProposal};
 do_accept(_, _, State) ->
